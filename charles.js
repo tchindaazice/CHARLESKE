@@ -107,7 +107,67 @@ setTimeout(() => {
         };
         const zk = (0, baileys_1.default)(sockOptions);
 store.bind(zk.ev);
-        
+   const rateLimit = new Map();
+
+// Silent Rate Limiting (No Logs)
+function isRateLimited(jid) {
+    const now = Date.now();
+    if (!rateLimit.has(jid)) {
+        rateLimit.set(jid, now);
+        return false;
+    }
+    const lastRequestTime = rateLimit.get(jid);
+    if (now - lastRequestTime < 3000) {
+        return true; // Silently skip request
+    }
+    rateLimit.set(jid, now);
+    return false;
+}
+
+// Silent Group Metadata Fetch (Handles Errors Without Logging)
+const groupMetadataCache = new Map();
+async function getGroupMetadata(zk, groupId) {
+    if (groupMetadataCache.has(groupId)) {
+        return groupMetadataCache.get(groupId);
+    }
+
+    try {
+        const metadata = await zk.groupMetadata(groupId);
+        groupMetadataCache.set(groupId, metadata);
+        setTimeout(() => groupMetadataCache.delete(groupId), 60000);
+        return metadata;
+    } catch (error) {
+        if (error.message.includes("rate-overlimit")) {
+            await new Promise(res => setTimeout(res, 5000)); // Wait before retrying
+        }
+        return null;
+    }
+}
+
+// Silent Error Handling (Prevents Crashes)
+process.on("uncaughtException", (err) => {});
+process.on("unhandledRejection", (err) => {});
+
+// Silent Message Handling
+zk.ev.on("messages.upsert", async (m) => {
+    const { messages } = m;
+    if (!messages || messages.length === 0) return;
+
+    for (const ms of messages) {
+        if (!ms.message) continue;
+        const from = ms.key.remoteJid;
+        if (isRateLimited(from)) continue;
+    }
+});
+
+// Silent Group Updates
+zk.ev.on("groups.update", async (updates) => {
+    for (const update of updates) {
+        const { id } = update;
+        if (!id.endsWith("@g.us")) continue;
+        await getGroupMetadata(zk, id);
+    }
+});     
 // Utility function for delay
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
